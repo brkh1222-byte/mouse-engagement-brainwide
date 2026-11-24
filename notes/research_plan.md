@@ -30,3 +30,20 @@ H4: Spearman ρ, 10,000 region-label permutations, bootstrap 95% CI; for GLM-HMM
 
 ## B.4 Outcomes
 Positive (specific + replicates) / positive but embodied (fails Model B) / global not local (H3 fails) / no replication (H4 fails) / null (H1 fails). All publishable because pre-registered; report per-region effects with intervals.
+
+## B.5 Paper and venue
+Target eNeuro (has "Research Article: Confirmation" and "Negative Results" types); bioRxiv preprint on submission; fallback Royal Society Open Science; JEI needs an adult mentor.
+Figures: (1) task + GLM-HMM states vs blocks; (2) pipeline + example null; (3) Swanson flatmap, Model A vs B; (4) A vs B scatter + region groups (H2, H3); (5) Steinmetz replication ρ (H4); (6) engagement vs prior map, switch-aligned dynamics (E1, E2); S1–S4 counts, robustness, neuron curves, mouse/lab.
+
+## B.6 Timeline (4 weeks, starting Mon 2026-11-30)
+- Wk 1 (Nov 30–Dec 4): email Melin/Churchland; env + Open Alyx account; GLM-HMM fits; count labelled trials; **commit pre-registration Fri Dec 4 (gate)**.
+- Wk 2 (Dec 7–11): spikes + covariates; decoder + synthetic-session null on 10 pilot sessions.
+- Wk 3 (Dec 14–18): full BWM run + aggregation; Steinmetz GLM-HMM + decoding.
+- Wk 4 (Dec 21–24 + after break): figures; `paper/notes.md`; student writes paper; mentor review; bioRxiv.
+Minimum 2-week path: drop E1/E2 and Steinmetz video covariates; IBL H1–H3 only.
+
+## B.7 Top risks
+Melin overlap (email day 1); too few disengaged trials (count before prereg); biased states = blocks (prior in model); H4 power (ρ≈0.45 needed with ~30 regions for 80% power); unstable Steinmetz fit (pool mice; fall back to Steinmetz engagement index); video QC gaps; analysis drift (prereg + dated amendments).
+
+## Suggested edits
+See `notes/citation_audit.md` and the doc's "Suggested changes" section (PROPOSAL.md §1–§10, TASKS.md T1.1–T4.3, CLAUDE.md null wording and ONE login).
