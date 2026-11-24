@@ -84,13 +84,14 @@ def main(argv=None):
             "p_engaged_smooth", "p_engaged_filt", "p_engaged_pred",
             "engaged_smooth", "engaged_filt", "engaged_pred"]
     C.RESULTS.mkdir(exist_ok=True)
-    out = C.RESULTS / "glmhmm_states.parquet"
+    tag = "" if design == "P" else f"_{design}"
+    out = C.RESULTS / f"glmhmm_states{tag}.parquet"
     bwm[keep + ["is_bwm"]].sort_values(["eid", "trial"]).reset_index(drop=True).to_parquet(out)
     sha = hashlib.sha256(open(out, "rb").read()).hexdigest()
 
     trials = pd.read_parquet(C.IBL_AGG / "bwm_trials_2026_Q2.pqt")
     inc = inclusion_table(bwm, trials)
-    inc.to_csv(C.RESULTS / "inclusion_sessions.csv", index=False)
+    inc.to_csv(C.RESULTS / f"inclusion_sessions{tag}.csv", index=False)
     ok = inc[inc["include_behaviour"]]
 
     occ_all = np.bincount(st["state"], minlength=K) / len(st)
@@ -111,7 +112,7 @@ def main(argv=None):
         "sessions_included_filtered_labels": int(((inc.n_trials >= 400) & (inc.n_eng_filt >= m) & (inc.n_dis_filt >= m)).sum()),
         "sessions_included_thr0.7": int(((inc.n_trials >= 400) & (inc["n_eng_thr0.7"] >= m) & (inc["n_dis_thr0.7"] >= m)).sum()),
         "sessions_included_thr0.9": int(((inc.n_trials >= 400) & (inc["n_eng_thr0.9"] >= m) & (inc["n_dis_thr0.9"] >= m)).sum()),
-        "label_file": "results/glmhmm_states.parquet", "label_file_sha256": sha,
+        "label_file": f"results/glmhmm_states{tag}.parquet", "label_file_sha256": sha,
     }
     # disengagement vs block prior and time in session (behaviour only)
     b = bwm[bwm["engaged_smooth"] >= 0]
@@ -121,7 +122,7 @@ def main(argv=None):
                           labels=["Q1", "Q2", "Q3", "Q4"], include_lowest=True))
     summ["frac_disengaged_by_session_quarter"] = {str(k): round(float(v), 4) for k, v in
                                                   (1 - q.groupby("q", observed=True)["engaged_smooth"].mean()).items()}
-    json.dump(summ, open(C.RESULTS / "behaviour_summary.json", "w"), indent=1)
+    json.dump(summ, open(C.RESULTS / f"behaviour_summary{tag}.json", "w"), indent=1)
     print(json.dumps(summ, indent=1))
 
     # ------------------------------------------------------------------ figures
@@ -130,12 +131,11 @@ def main(argv=None):
     # a: model selection
     sel = pd.read_csv(d / "k_selection.csv")
     a0 = ax[0, 0]
-    a0.errorbar(sel["K"], sel["mean_bits"], yerr=sel["sem_bits"], color=PAL[0], lw=2, marker="o", ms=5, capsize=2)
-    a0.plot(sel["K"], sel["mean_bits_global_params"], color=MUTED, lw=1.5, marker="s", ms=4)
-    a0.annotate("per-mouse fits", (sel["K"].iloc[-1], sel["mean_bits"].iloc[-1]), xytext=(-4, 8),
-                textcoords="offset points", ha="right", color=INK, fontsize=8)
-    a0.annotate("global parameters", (sel["K"].iloc[-1], sel["mean_bits_global_params"].iloc[-1]), xytext=(-4, -12),
-                textcoords="offset points", ha="right", color=INK, fontsize=8)
+    a0.errorbar(sel["K"], sel["mean_bits"], yerr=sel["sem_bits"], color=PAL[0], lw=2, marker="o", ms=5,
+                capsize=2, label="per-mouse fits")
+    a0.errorbar(sel["K"], sel["mean_bits_global_params"], yerr=sel["sem_bits_global_params"], color=MUTED,
+                lw=1.5, marker="s", ms=4, capsize=2, label="global parameters")
+    a0.legend(loc="lower right", frameon=False, fontsize=8)
     a0.axvline(K, color=MUTED, lw=0.8, ls=":")
     a0.set(xlabel="number of states K", ylabel="held-out bits per trial (vs coin flip)", title="a  Model selection",
            xticks=sel["K"])
@@ -143,9 +143,9 @@ def main(argv=None):
     a1 = ax[0, 1]
     x = np.arange(len(names))
     for k in range(K):
-        a1.plot(x, gp.W[k], color=PAL[k], lw=2, marker="o", ms=5)
-        a1.annotate(snames[k], (x[0], gp.W[k, 0]), xytext=(6, 2), textcoords="offset points", fontsize=7.5, color=INK)
+        a1.plot(x, gp.W[k], color=PAL[k], lw=2, marker="o", ms=5, label=snames[k])
     a1.axhline(0, color=MUTED, lw=0.8)
+    a1.legend(loc="upper right", frameon=False, fontsize=7.5)
     a1.set(xticks=x, xticklabels=names, ylabel="GLM weight", title="b  State weights (global fit)")
     # c: psychometric curves per state (empirical, BWM trials, argmax state)
     a2 = ax[0, 2]
@@ -183,10 +183,10 @@ def main(argv=None):
     cur = 1 - b2.groupby(pd.cut(b2["pos"], bins, include_lowest=True), observed=True)["engaged_smooth"].mean()
     a5.plot((bins[:-1] + bins[1:]) / 2, cur.values, color=PAL[0], lw=2, marker="o", ms=4)
     a5.set(xlabel="position in session (fraction of trials)", ylabel="fraction of labelled trials disengaged",
-           title="f  Disengagement rises within sessions", ylim=(0, None))
+           title="f  Disengagement across the session", ylim=(0, None))
     fig.tight_layout()
     for ext in ("png", "pdf"):
-        fig.savefig(C.FIGURES / f"fig1_behaviour.{ext}")
+        fig.savefig(C.FIGURES / (f"fig1_behaviour.{ext}" if design == "P" else f"figS1_behaviour_{design}.{ext}"))
     plt.close(fig)
 
 

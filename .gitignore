@@ -12,3 +12,4 @@ venv/
 *.nwb
 *.npy
 *.avro
+*.pqt
