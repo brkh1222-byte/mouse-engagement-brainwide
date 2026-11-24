@@ -1,0 +1,578 @@
+"""T1.3: Bernoulli GLM-HMM of IBL choices (Ashwood et al. 2022 design). Behaviour only.
+
+Model
+-----
+Each trial t of a session is in one hidden state z_t in {1..K}. States persist
+according to a Markov transition matrix A (K x K) with initial distribution pi.
+In state k the mouse chooses "right" with probability sigmoid(w_k . x_t), where
+x_t holds the trial's inputs. Each state is therefore its own little choice
+strategy; "engaged" is the state that weights the stimulus most.
+
+Inputs (columns of X)
+  stim   signed contrast (right - left), z-scored over the whole dataset (Ashwood)
+  pc     previous valid choice (+1 right / -1 left; 0 if none yet in the session)
+  wsls   win-stay/lose-switch = pc * previous outcome (+1 rewarded / -1 not)
+  prior  [design "P" only] block prior: log-odds of p(stim right) from a Bayes
+         observer of past stimulus sides, scaled to [-1, 1] (see `bayes_prior`)
+  bias   constant 1
+
+Designs
+  "A90"  Ashwood replication: first-90 (50/50) trials of biased/ephys sessions,
+         inputs stim, pc, wsls, bias. Sessions with >= 10 no-go trials in those
+         90 trials are dropped (as in Ashwood's code).
+  "P"    Primary: all trials of biased/ephys sessions, with the block-prior input.
+
+No-go trials (choice == 0) carry no choice; they are masked out of the
+likelihood (their emission likelihood is 1), exactly as in Ashwood.
+
+Fitting: MAP-EM. Gaussian prior N(0, sigma^2) on weights, Dirichlet(alpha) on
+each transition row. E-step: scaled forward-backward per session (numba).
+M-step: closed form for A and pi; Newton's method for each state's weighted
+logistic regression.
+
+Protocol (fixed in advance; see preregistration/prereg.md)
+  1. Global fit (all mice pooled), K = 1..5, 20 initialisations each.
+  2. Session-level 5-fold CV of the global model (3 inits per fold, trained on
+     train sessions only).
+  3. Per-mouse MAP fits initialised from the global fit of the same K
+     (and, for CV, from the global fit of the same fold, so no test data leak).
+  4. K chosen by the 1-SE rule on per-mouse held-out log-likelihood.
+  5. Final per-mouse fits on all sessions -> trial posteriors.
+
+Usage
+  python -m src.glmhmm build  --design P
+  python -m src.glmhmm global --design P [--k 3]
+  python -m src.glmhmm cv     --design P
+  python -m src.glmhmm mouse  --design P
+  python -m src.glmhmm select --design P
+  python -m src.glmhmm label  --design P --k K
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from numba import njit
+
+from src import config as C
+
+OUT = C.RESULTS / "glmhmm"
+BLOCK_SESSION_TYPES = ("biasedChoiceWorld", "ephysChoiceWorld")
+LOG2 = np.log(2.0)
+
+
+# =========================================================================== data
+def bayes_prior(stim_side: np.ndarray, n_unbiased: int = C.UNBIASED_TRIALS,
+                hazard: float = C.BLOCK_HAZARD, p_block: float = 0.8) -> np.ndarray:
+    """Predictive p(stimulus on the right) for each trial, before it is shown.
+
+    A Bayes-optimal observer that knows the IBL generative structure, in a
+    constant-hazard approximation: the first `n_unbiased` trials are 50/50;
+    afterwards a hidden block is 'right-likely' (p=0.8) or 'left-likely'
+    (p=0.2), equally likely at first, and switches with probability `hazard`
+    per trial. The observer updates on every past stimulus side
+    (+1 right, -1 left, 0 = unknown/skip). Returns p_right in [0.2, 0.8].
+    """
+    T = len(stim_side)
+    p_right = np.full(T, 0.5)
+    b = 0.5  # belief that the block is right-likely
+    for t in range(T):
+        if t >= n_unbiased:
+            # predictive for trial t (after the transition into t)
+            p_right[t] = b * p_block + (1 - b) * (1 - p_block)
+        s = stim_side[t]
+        if t >= n_unbiased and s != 0:
+            lr = p_block if s > 0 else 1 - p_block
+            ll = 1 - p_block if s > 0 else p_block
+            b = b * lr / (b * lr + (1 - b) * ll)
+        if t >= n_unbiased - 1:
+            b = b * (1 - hazard) + (1 - b) * hazard
+    return p_right
+
+
+def session_design(df: pd.DataFrame, with_prior: bool) -> tuple[np.ndarray, np.ndarray]:
+    """Unnormalised design matrix and choices for one session (rows in trial order).
+
+    Returns X (T x D) and y (T,) with y=1 right, 0 left, -1 no-go (masked).
+    IBL choice coding: -1 = CCW = correct for right stimulus -> 'right'.
+    """
+    cl = np.nan_to_num(df["contrastLeft"].to_numpy(float))
+    cr = np.nan_to_num(df["contrastRight"].to_numpy(float))
+    stim = cr - cl
+    ch = df["choice"].to_numpy()
+    y = np.where(ch == -1, 1, np.where(ch == 1, 0, -1)).astype(np.int64)
+    success = np.where(df["feedbackType"].to_numpy() > 0, 1.0, -1.0)
+    T = len(y)
+    pc = np.zeros(T)
+    wsls = np.zeros(T)
+    last_c, last_s = 0.0, 0.0
+    for t in range(T):
+        pc[t], wsls[t] = last_c, last_c * last_s
+        if y[t] >= 0:
+            last_c = 1.0 if y[t] == 1 else -1.0
+            last_s = success[t]
+    cols = [stim, pc, wsls]
+    if with_prior:
+        # stimulus side: from which contrast column is non-NaN (defined even at 0% contrast)
+        side = np.where(df["contrastRight"].notna().to_numpy(), 1.0,
+                        np.where(df["contrastLeft"].notna().to_numpy(), -1.0, 0.0))
+        p = bayes_prior(side)
+        cols.append(np.log(p / (1 - p)) / np.log(4.0))   # log-odds scaled to [-1, 1]
+    cols.append(np.ones(T))
+    return np.column_stack(cols), y
+
+
+def input_names(design: str) -> list[str]:
+    return ["stim", "pc", "wsls"] + (["prior"] if design == "P" else []) + ["bias"]
+
+
+def build_dataset(design: str) -> pd.DataFrame:
+    """Concatenate all BWM mice's biased/ephys sessions into one long table."""
+    sessions = pd.read_csv(C.IBL_DATA / "bwm_sessions.csv")
+    bwm_eids = set(sessions["eid"])
+    agg = pd.read_parquet(C.IBL_AGG / "bwm_trials_2026_Q2.pqt")
+    rows = []
+    for subject, sg in sessions.groupby("subject"):
+        f = C.IBL_SUBJECT_TRIALS / subject / "_ibl_subjectTrials.table.pqt"
+        if f.exists():
+            st = pd.read_parquet(f)
+            st = st[st["task_protocol"].isin(BLOCK_SESSION_TYPES)]
+        else:
+            st = pd.DataFrame(columns=["session"])
+        # BWM recording sessions always come from the BWM aggregate, so that trial
+        # indices match the table used for the neural analysis exactly.
+        if len(st):
+            st = st[~st["session"].astype(str).isin(bwm_eids)].copy()
+            st["session"] = st["session"].astype(str)
+        parts = [st] if len(st) else []
+        for e in sg["eid"]:
+            g = agg[agg["eid"] == e].copy()
+            g["session"] = e
+            g["task_protocol"] = "ephysChoiceWorld"
+            g["session_start_time"] = sg.loc[sg["eid"] == e, "start_time"].iloc[0]
+            parts.append(g)
+        st = pd.concat(parts, ignore_index=False)
+        st["_row"] = st.groupby("session").cumcount()   # original within-session order
+        st["session_start_time"] = pd.to_datetime(st["session_start_time"], format="mixed")
+        order = st.groupby("session")["session_start_time"].first().sort_values().index
+        for i, eid in enumerate(order):
+            g = st[st["session"] == eid].sort_values("_row")
+            g = g.assign(trial=np.arange(len(g)))
+            if design == "A90":
+                g = g.iloc[: C.UNBIASED_TRIALS]
+                g = g[g["probabilityLeft"] == 0.5]
+                if (g["choice"] == 0).sum() >= 10 or len(g) < 10:
+                    continue
+            if len(g) < 10:
+                continue
+            X, y = session_design(g, with_prior=(design == "P"))
+            d = pd.DataFrame(X, columns=input_names(design))
+            d["y"] = y
+            d["subject"] = subject
+            d["eid"] = str(eid)
+            d["trial"] = g["trial"].to_numpy()
+            d["session_order"] = i
+            d["is_bwm"] = str(eid) in bwm_eids
+            d["probabilityLeft"] = g["probabilityLeft"].to_numpy()
+            rows.append(d)
+    df = pd.concat(rows, ignore_index=True)
+    # z-score stim over all trials (Ashwood); keep the scale for reproducibility
+    mu, sd = df["stim"].mean(), df["stim"].std()
+    df["stim"] = (df["stim"] - mu) / sd
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / design).mkdir(exist_ok=True)
+    json.dump({"stim_mean": mu, "stim_sd": sd}, open(OUT / design / "stim_scale.json", "w"))
+    # deterministic session-level CV folds, assigned within each mouse
+    rng = np.random.default_rng(C.SEED)
+    fold = {}
+    for subject, g in df.groupby("subject"):
+        eids = g["eid"].unique()
+        perm = rng.permutation(len(eids))
+        for j, e in zip(perm, eids):
+            fold[e] = j % C.GLMHMM_N_FOLDS
+    df["fold"] = df["eid"].map(fold)
+    df.to_parquet(C.IBL_DATA / f"glmhmm_{design}.pqt")
+    return df
+
+
+# =========================================================================== core numerics
+@njit(cache=True)
+def _forward_backward(logB, log_pi, A, starts, ends):
+    """Scaled forward-backward over independent sequences.
+
+    logB: T x K emission log-likelihoods. Returns smoothed gamma (T x K),
+    filtered alpha (T x K), predictive (T x K, p(z_t | y_<t)), summed xi (K x K)
+    and total log-likelihood.
+    """
+    T, K = logB.shape
+    gamma = np.zeros((T, K))
+    alpha = np.zeros((T, K))
+    pred = np.zeros((T, K))
+    xi = np.zeros((K, K))
+    ll = 0.0
+    pi = np.exp(log_pi)
+    beta = np.zeros((T, K))
+    c = np.zeros(T)
+    for s in range(len(starts)):
+        a, b = starts[s], ends[s]
+        # forward
+        for t in range(a, b):
+            m = logB[t].max()
+            e = np.exp(logB[t] - m)
+            if t == a:
+                p = pi.copy()
+            else:
+                p = alpha[t - 1] @ A
+            pred[t] = p
+            v = p * e
+            z = v.sum()
+            alpha[t] = v / z
+            c[t] = z
+            ll += np.log(z) + m
+        # backward
+        beta[b - 1] = 1.0
+        for t in range(b - 2, a - 1, -1):
+            m = logB[t + 1].max()
+            e = np.exp(logB[t + 1] - m)
+            v = A @ (e * beta[t + 1])
+            beta[t] = v / c[t + 1]
+            # xi
+            for i in range(K):
+                for j in range(K):
+                    xi[i, j] += alpha[t, i] * A[i, j] * e[j] * beta[t + 1, j] / c[t + 1]
+        for t in range(a, b):
+            g = alpha[t] * beta[t]
+            gamma[t] = g / g.sum()
+    return gamma, alpha, pred, xi, ll
+
+
+def _emission_loglik(X, y, W):
+    """T x K log p(y_t | z_t = k); masked (y<0) rows contribute 0."""
+    eta = X @ W.T
+    ll = np.where(y[:, None] == 1, -np.logaddexp(0, -eta), -np.logaddexp(0, eta))
+    ll[y < 0] = 0.0
+    return ll
+
+
+def _newton_logistic(X, y, wts, w0, sigma, n_iter=25, tol=1e-8):
+    """MAP weighted logistic regression by Newton's method (D is tiny)."""
+    w = w0.copy()
+    D = X.shape[1]
+    lam = 1.0 / sigma ** 2
+    for _ in range(n_iter):
+        eta = X @ w
+        p = 1 / (1 + np.exp(-eta))
+        g = X.T @ (wts * (y - p)) - lam * w
+        H = (X * (wts * p * (1 - p))[:, None]).T @ X + lam * np.eye(D)
+        step = np.linalg.solve(H, g)
+        w = w + step
+        if np.max(np.abs(step)) < tol:
+            break
+    return w
+
+
+@dataclass
+class Params:
+    W: np.ndarray          # K x D
+    A: np.ndarray          # K x K
+    pi: np.ndarray         # K
+
+    @property
+    def K(self):
+        return self.W.shape[0]
+
+    def to_dict(self):
+        return {"W": self.W.tolist(), "A": self.A.tolist(), "pi": self.pi.tolist()}
+
+    @staticmethod
+    def from_dict(d):
+        return Params(np.array(d["W"]), np.array(d["A"]), np.array(d["pi"]))
+
+
+@dataclass
+class Seqs:
+    X: np.ndarray
+    y: np.ndarray
+    starts: np.ndarray
+    ends: np.ndarray
+    n_obs: int = field(init=False)
+
+    def __post_init__(self):
+        self.n_obs = int((self.y >= 0).sum())
+
+    @staticmethod
+    def from_df(df: pd.DataFrame, cols: list[str]) -> "Seqs":
+        # rows must be grouped by session (contiguous)
+        key = df["eid"].to_numpy()
+        brk = np.flatnonzero(key[1:] != key[:-1]) + 1
+        starts = np.concatenate([[0], brk]).astype(np.int64)
+        ends = np.concatenate([brk, [len(df)]]).astype(np.int64)
+        return Seqs(df[cols].to_numpy(float), df["y"].to_numpy(np.int64), starts, ends)
+
+
+def log_prior(p: Params, sigma, alpha) -> float:
+    lp = -0.5 * np.sum(p.W ** 2) / sigma ** 2
+    lp += (alpha - 1) * np.sum(np.log(np.maximum(p.A, 1e-300)))
+    return float(lp)
+
+
+def loglik(p: Params, s: Seqs) -> float:
+    logB = _emission_loglik(s.X, s.y, p.W)
+    return float(_forward_backward(logB, np.log(p.pi), p.A, s.starts, s.ends)[4])
+
+
+def posteriors(p: Params, s: Seqs):
+    logB = _emission_loglik(s.X, s.y, p.W)
+    gamma, alpha, pred, _, ll = _forward_backward(logB, np.log(p.pi), p.A, s.starts, s.ends)
+    return gamma, alpha, pred, ll
+
+
+def fit_em(s: Seqs, init: Params, sigma=C.GLMHMM_PRIOR_SIGMA, alpha=C.GLMHMM_DIRICHLET_ALPHA,
+           max_iter=500, tol=1e-7, verbose=False):
+    """MAP-EM. Stops when the relative change of the log posterior < tol."""
+    p = Params(init.W.copy(), init.A.copy(), init.pi.copy())
+    K = p.K
+    obs = s.y >= 0
+    yo = np.clip(s.y, 0, 1).astype(float)
+    hist = []
+    prev = -np.inf
+    for it in range(max_iter):
+        logB = _emission_loglik(s.X, s.y, p.W)
+        gamma, _, _, xi, ll = _forward_backward(logB, np.log(p.pi), p.A, s.starts, s.ends)
+        lpost = ll + log_prior(p, sigma, alpha)
+        hist.append(lpost)
+        if verbose and it % 10 == 0:
+            print(f"    it {it:3d}  log post {lpost:.3f}", flush=True)
+        if np.isfinite(prev) and abs(lpost - prev) < tol * abs(prev):
+            break
+        if lpost < prev - 1e-6 * abs(prev):
+            print(f"    [warn] log posterior decreased at it {it}: {prev:.4f} -> {lpost:.4f}")
+        prev = lpost
+        # M-step
+        if K > 1:
+            A = xi + (alpha - 1)
+            p.A = A / A.sum(1, keepdims=True)
+            pi = gamma[s.starts].sum(0) + 1e-3
+            p.pi = pi / pi.sum()
+        for k in range(K):
+            p.W[k] = _newton_logistic(s.X[obs], yo[obs], gamma[obs, k], p.W[k], sigma)
+    return p, hist
+
+
+def init_params(s: Seqs, K: int, rng, w_glm=None, noise=0.2, sticky=C.GLMHMM_TRANSITION_STICKY_INIT):
+    """Ashwood-style init: GLM weights + Gaussian noise per state; sticky A."""
+    D = s.X.shape[1]
+    if w_glm is None:
+        obs = s.y >= 0
+        w_glm = _newton_logistic(s.X[obs], s.y[obs].astype(float), np.ones(obs.sum()),
+                                 np.zeros(D), C.GLMHMM_PRIOR_SIGMA)
+    W = w_glm[None, :] + noise * rng.standard_normal((K, D))
+    if K == 1:
+        W = w_glm[None, :].copy()
+    A = sticky * np.eye(K) + (1 - sticky) / max(K - 1, 1) * (1 - np.eye(K)) if K > 1 else np.ones((1, 1))
+    A = A + 0.05 * rng.random((K, K)) * (K > 1)
+    A = A / A.sum(1, keepdims=True)
+    return Params(W, A, np.ones(K) / K), w_glm
+
+
+def best_of_inits(s: Seqs, K: int, n_inits: int, seed: int, verbose=False):
+    rng = np.random.default_rng(seed)
+    best, best_lp, w_glm, all_lp = None, -np.inf, None, []
+    for i in range(n_inits if K > 1 else 1):
+        init, w_glm = init_params(s, K, rng, w_glm)
+        p, h = fit_em(s, init, verbose=verbose)
+        all_lp.append(h[-1])
+        if h[-1] > best_lp:
+            best, best_lp = p, h[-1]
+    return best, best_lp, all_lp
+
+
+def bits_per_trial(ll: float, s: Seqs) -> float:
+    """Held-out LL relative to a coin flip, in bits per observed trial."""
+    return (ll + s.n_obs * LOG2) / (s.n_obs * LOG2)
+
+
+def sort_states(p: Params, names: list[str]) -> Params:
+    """Canonical order: engaged (largest stim weight) first, then by bias weight
+    (most leftward-bias first)."""
+    si, bi = names.index("stim"), names.index("bias")
+    eng = int(np.argmax(p.W[:, si]))
+    rest = [k for k in np.argsort(p.W[:, bi]) if k != eng]
+    order = [eng] + rest
+    return Params(p.W[order], p.A[np.ix_(order, order)], p.pi[order])
+
+
+def align_to(p: Params, ref: Params) -> Params:
+    """Permute states of p to best match ref (Hungarian on weight distance)."""
+    from scipy.optimize import linear_sum_assignment
+    cost = ((p.W[:, None, :] - ref.W[None, :, :]) ** 2).sum(-1)
+    r, c = linear_sum_assignment(cost)
+    order = r[np.argsort(c)]
+    return Params(p.W[order], p.A[np.ix_(order, order)], p.pi[order])
+
+
+# =========================================================================== protocol steps
+def load(design: str) -> pd.DataFrame:
+    return pd.read_parquet(C.IBL_DATA / f"glmhmm_{design}.pqt")
+
+
+def step_global(design: str, ks=C.GLMHMM_K_RANGE, n_inits=C.GLMHMM_N_INITS_GLOBAL):
+    df = load(design)
+    names = input_names(design)
+    s = Seqs.from_df(df, names)
+    d = OUT / design
+    for K in ks:
+        t0 = time.time()
+        p, lp, all_lp = best_of_inits(s, K, n_inits, C.SEED + K)
+        p = sort_states(p, names)
+        rec = {"K": K, "log_post": lp, "all_inits_log_post": all_lp, "n_obs": s.n_obs,
+               "n_trials": len(df), "n_sessions": len(s.starts), "inputs": names, **p.to_dict(),
+               "seconds": time.time() - t0}
+        json.dump(rec, open(d / f"global_K{K}.json", "w"), indent=1)
+        n_close = int(np.sum(np.array(all_lp) > lp - 1.0))
+        print(f"[global {design}] K={K} log post {lp:.2f}  inits within 1 nat of best: "
+              f"{n_close}/{len(all_lp)}  {time.time()-t0:.0f}s", flush=True)
+
+
+def step_cv(design: str, ks=C.GLMHMM_K_RANGE, n_inits=3):
+    """Global-model CV over held-out sessions; saves fold fits for per-mouse init."""
+    df = load(design)
+    names = input_names(design)
+    d = OUT / design
+    rows = []
+    for f in range(C.GLMHMM_N_FOLDS):
+        tr, te = df[df["fold"] != f], df[df["fold"] == f]
+        s_tr, s_te = Seqs.from_df(tr, names), Seqs.from_df(te, names)
+        for K in ks:
+            p, lp, _ = best_of_inits(s_tr, K, n_inits, C.SEED + 100 * f + K)
+            p = sort_states(p, names)
+            ll_te = loglik(p, s_te)
+            rows.append({"fold": f, "K": K, "test_ll": ll_te, "test_n": s_te.n_obs,
+                         "test_bits": bits_per_trial(ll_te, s_te)})
+            json.dump(p.to_dict(), open(d / f"cvfold{f}_K{K}.json", "w"))
+            print(f"[cv {design}] fold {f} K={K} test bits/trial {rows[-1]['test_bits']:.4f}",
+                  flush=True)
+    pd.DataFrame(rows).to_csv(d / "cv_global.csv", index=False)
+
+
+def _fit_mouse(args):
+    design, subject, g, names, ks = args
+    d = OUT / design
+    out_rows, params = [], {}
+    s_all = Seqs.from_df(g, names)
+    for K in ks:
+        gp = Params.from_dict(json.load(open(d / f"global_K{K}.json")))
+        p, h = fit_em(s_all, gp)
+        p = align_to(p, gp)
+        params[K] = p.to_dict()
+        for f in sorted(g["fold"].unique()):
+            tr, te = g[g["fold"] != f], g[g["fold"] == f]
+            if tr["eid"].nunique() < 1 or te["eid"].nunique() < 1:
+                continue
+            s_tr, s_te = Seqs.from_df(tr, names), Seqs.from_df(te, names)
+            fp = Params.from_dict(json.load(open(d / f"cvfold{f}_K{K}.json")))
+            pf, _ = fit_em(s_tr, fp)
+            ll = loglik(pf, s_te)
+            out_rows.append({"subject": subject, "K": K, "fold": f, "test_ll": ll,
+                             "test_n": s_te.n_obs})
+    return subject, out_rows, params
+
+
+def step_mouse(design: str, ks=C.GLMHMM_K_RANGE):
+    df = load(design)
+    names = input_names(design)
+    d = OUT / design
+    rows, allp = [], {}
+    for subject, g in df.groupby("subject", sort=True):
+        t0 = time.time()
+        _, r, p = _fit_mouse((design, subject, g, names, ks))
+        rows += r
+        allp[subject] = p
+        print(f"[mouse {design}] {subject}: {g['eid'].nunique()} sessions, "
+              f"{len(g)} trials, {time.time()-t0:.0f}s", flush=True)
+    pd.DataFrame(rows).to_csv(d / "cv_mouse.csv", index=False)
+    json.dump(allp, open(d / "mouse_params.json", "w"))
+
+
+def step_select(design: str) -> int:
+    """1-SE rule: smallest K whose mean per-mouse held-out bits/trial is within
+    one standard error (across mice) of the best K."""
+    d = OUT / design
+    cv = pd.read_csv(d / "cv_mouse.csv")
+    per = cv.groupby(["subject", "K"]).agg(ll=("test_ll", "sum"), n=("test_n", "sum")).reset_index()
+    per["bits"] = (per["ll"] + per["n"] * LOG2) / (per["n"] * LOG2)
+    # paired comparison against the best K, per mouse
+    piv = per.pivot(index="subject", columns="K", values="bits").dropna()
+    means = piv.mean()
+    kbest = int(means.idxmax())
+    chosen = kbest
+    for K in sorted(piv.columns):
+        diff = piv[kbest] - piv[K]
+        se = diff.std(ddof=1) / np.sqrt(len(diff))
+        if means[kbest] - means[K] <= se:
+            chosen = int(K)
+            break
+    summ = pd.DataFrame({"mean_bits": means, "sem_bits": piv.std(ddof=1) / np.sqrt(len(piv))})
+    summ.to_csv(d / "k_selection.csv")
+    json.dump({"K_best_mean": kbest, "K_chosen_1se": chosen, "n_mice": len(piv)},
+              open(d / "k_selection.json", "w"))
+    print(summ, f"\nbest K by mean = {kbest}; chosen (1-SE rule) = {chosen}")
+    return chosen
+
+
+def step_label(design: str, K: int):
+    """Per-mouse posteriors for every trial; engaged = state 0 after alignment."""
+    df = load(design)
+    names = input_names(design)
+    d = OUT / design
+    mp = json.load(open(d / "mouse_params.json"))
+    out = []
+    for subject, g in df.groupby("subject", sort=True):
+        p = Params.from_dict(mp[subject][str(K)])
+        s = Seqs.from_df(g, names)
+        gamma, alpha, pred, _ = posteriors(p, s)
+        o = g[["subject", "eid", "trial", "session_order", "is_bwm", "y", "probabilityLeft"]].copy()
+        for k in range(K):
+            o[f"p_smooth_{k}"] = gamma[:, k]
+            o[f"p_filt_{k}"] = alpha[:, k]
+            o[f"p_pred_{k}"] = pred[:, k]
+        out.append(o)
+    out = pd.concat(out, ignore_index=True)
+    thr = C.STATE_POSTERIOR_THRESHOLD
+    for kind in ("smooth", "filt", "pred"):
+        pe = out[f"p_{kind}_0"]
+        out[f"engaged_{kind}"] = np.where(pe > thr, 1, np.where(pe < 1 - thr, 0, -1))
+    out.to_parquet(d / f"states_K{K}.pqt")
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("step", choices=["build", "global", "cv", "mouse", "select", "label"])
+    ap.add_argument("--design", default="P", choices=["P", "A90"])
+    ap.add_argument("--k", type=int, nargs="*")
+    a = ap.parse_args(argv)
+    ks = tuple(a.k) if a.k else C.GLMHMM_K_RANGE
+    if a.step == "build":
+        df = build_dataset(a.design)
+        print(f"{a.design}: {len(df)} trials, {df['eid'].nunique()} sessions, "
+              f"{df['subject'].nunique()} mice, BWM sessions {df.loc[df.is_bwm, 'eid'].nunique()}")
+    elif a.step == "global":
+        step_global(a.design, ks)
+    elif a.step == "cv":
+        step_cv(a.design, ks)
+    elif a.step == "mouse":
+        step_mouse(a.design, ks)
+    elif a.step == "select":
+        step_select(a.design)
+    elif a.step == "label":
+        step_label(a.design, ks[0])
+
+
+if __name__ == "__main__":
+    main()

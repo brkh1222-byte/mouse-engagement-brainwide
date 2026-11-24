@@ -25,7 +25,7 @@ Work top to bottom. Tick boxes as tasks complete. Read PROPOSAL.md and CLAUDE.md
 
 ## Phase 3: Decoding
 - [ ] **T3.1** Write `src/decode.py`: per region × session, nested-CV L2 logistic decoding of engagement with covariates, plus the session-permutation null. Test it on 10 sessions first.
-- [ ] **T3.2** Full run (H100 optional), then region aggregation (Stouffer + FDR) into `results/region_effects.csv`.
+- [ ] **T3.2** Full run on all eligible sessions, CPU only on this Mac: resumable session-by-session streaming (download → features → delete raw), `caffeinate -i nice`, at most 2 heavy processes; then region aggregation (Stouffer + FDR) into `results/region_effects.csv`.
 - [ ] **T3.3** Brain map figure (iblatlas swanson/flatmap).
 
 ## Phase 4: Replication
