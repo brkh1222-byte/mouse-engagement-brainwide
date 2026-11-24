@@ -33,4 +33,4 @@ Work top to bottom. Tick boxes as tasks complete. Read PROPOSAL.md and CLAUDE.md
 - [ ] **T4.2** Compute the cross-dataset Spearman correlation over shared regions, with a figure.
 
 ## Phase 5: Write-up
-- [ ] **T5.1** Write `paper/notes.md` with bullet results and deviations from the pre-registration. **The student writes the paper text personally.**
+- [ ] **T5.1** Write `paper/notes.md` with bullet results and deviations from the pre-registration. Claude drafts `paper/main.tex`; the researcher reviews and edits it (AI-use disclosure; authorship TBD).
