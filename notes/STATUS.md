@@ -5,7 +5,7 @@
 - T1.1: competition re-check done → PARTIAL overlap only (`notes/competition.md`). Melin tag still unconfirmed; emailing Melin/Churchland is recommended.
 - T1.2 (partly): `src/ibl_sessions.py`. BWM = 459 sessions, 139 mice, 12 labs, 295,920 trials (`data/ibl/bwm_sessions.csv`, per-session trials in `data/ibl/trials/`). Per-mouse history tables (`aggregates/Subjects/...` in the open bucket) were downloading when the Mac shut down: about 45 of 139 mice done.
 - T1.3 code: `src/glmhmm.py` (numba forward-backward, MAP-EM, Newton M-step, global + CV + per-mouse + 1-SE K selection, designs A90 = Ashwood replication and P = primary with a block-prior input). `tests/test_glmhmm.py`: 3 tests pass on simulated data.
-- Decoding pipeline code, for **simulated data only**: `src/spikes.py`, `src/covariates.py`, `src/decode.py`, `src/simulate.py`, `tests/test_decode.py`. These tests were running and had not passed or failed when the Mac shut down.
+- Decoding pipeline code, for **simulated data only**: `src/spikes.py`, `src/covariates.py`, `src/decode.py`, `src/simulate.py`, `tests/test_decode.py`. All 6 tests pass (75 s), including Model A vs B confound removal and session-permutation null calibration under drift.
 - No spike data downloaded yet. No neural statistic computed.
 
 ## Not done
