@@ -3,10 +3,10 @@
 Work top to bottom. Tick boxes as tasks complete. Read PROPOSAL.md and CLAUDE.md first.
 
 ## Phase 0: Setup
-- [ ] **T0.1** Create `environment.yml`: python 3.11, ONE-api, ibllib/brainbox, ssm or dynamax (JAX), scikit-learn, numpy, pandas, statsmodels, matplotlib, iblatlas and pynwb. Also create `src/config.py`.
+- [x] **T0.1** Environment via `uv` (no conda): `uv venv --python 3.11 .venv`; pins in `requirements.txt` (top level) and `requirements.lock` (full freeze). CPU only (JAX CPU, numba). `src/config.py` holds paths and all pre-registered constants. (pynwb deferred to T4.1.)
 
 ## Phase 1: Checks, behaviour and pre-registration
-- [ ] **T1.1 Competition check.** Search bioRxiv, arXiv and IBL publications for Melin et al. 2026 and any brain-wide engagement or GLM-HMM Neuropixels analysis. Summarise in `notes/competition.md`. **Flag if overlapping.**
+- [x] **T1.1 Competition check.** Search bioRxiv, arXiv and IBL publications for Melin et al. 2026 and any brain-wide engagement or GLM-HMM Neuropixels analysis. Summarise in `notes/competition.md`. **Flag if overlapping.**
 - [ ] **T1.2** Write `src/ibl_sessions.py`: connect with ONE (public credentials), list the Brainwidemap sessions, and download trials tables into `data/ibl/trials/`.
   *Done when:* about 459 sessions are listed.
 - [ ] **T1.3** Write `src/glmhmm.py` to fit a 3-state GLM-HMM (Ashwood 2022 design) across mice and label trials.
