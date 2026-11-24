@@ -333,12 +333,13 @@ def posteriors(p: Params, s: Seqs):
 
 
 def fit_em(s: Seqs, init: Params, sigma=C.GLMHMM_PRIOR_SIGMA, alpha=C.GLMHMM_DIRICHLET_ALPHA,
-           max_iter=500, tol=1e-7, verbose=False):
+           max_iter=1000, tol=1e-7, verbose=False, newton_steps=5):
     """MAP-EM. Stops when the relative change of the log posterior < tol."""
     p = Params(init.W.copy(), init.A.copy(), init.pi.copy())
     K = p.K
     obs = s.y >= 0
-    yo = np.clip(s.y, 0, 1).astype(float)
+    Xo = s.X[obs]
+    yo = s.y[obs].astype(float)
     hist = []
     prev = -np.inf
     for it in range(max_iter):
@@ -359,8 +360,10 @@ def fit_em(s: Seqs, init: Params, sigma=C.GLMHMM_PRIOR_SIGMA, alpha=C.GLMHMM_DIR
             p.A = A / A.sum(1, keepdims=True)
             pi = gamma[s.starts].sum(0) + 1e-3
             p.pi = pi / pi.sum()
+        go = gamma[obs]
         for k in range(K):
-            p.W[k] = _newton_logistic(s.X[obs], yo[obs], gamma[obs, k], p.W[k], sigma)
+            # generalised EM: a few warm-started Newton steps per M-step are enough
+            p.W[k] = _newton_logistic(Xo, yo, go[:, k], p.W[k], sigma, n_iter=newton_steps)
     return p, hist
 
 
@@ -380,16 +383,30 @@ def init_params(s: Seqs, K: int, rng, w_glm=None, noise=0.2, sticky=C.GLMHMM_TRA
     return Params(W, A, np.ones(K) / K), w_glm
 
 
-def best_of_inits(s: Seqs, K: int, n_inits: int, seed: int, verbose=False):
+def best_of_inits(s: Seqs, K: int, n_inits: int, seed: int, verbose=False,
+                  short_iter: int = 100, n_finish: int = 3):
+    """Two-stage multi-start: every init runs `short_iter` EM iterations; the
+    best `n_finish` are then run to convergence. Returns the best final fit."""
     rng = np.random.default_rng(seed)
-    best, best_lp, w_glm, all_lp = None, -np.inf, None, []
-    for i in range(n_inits if K > 1 else 1):
+    if K == 1:
+        init, _ = init_params(s, 1, rng)
+        p, h = fit_em(s, init)
+        return p, h[-1], [h[-1]]
+    w_glm, short = None, []
+    for i in range(n_inits):
         init, w_glm = init_params(s, K, rng, w_glm)
-        p, h = fit_em(s, init, verbose=verbose)
-        all_lp.append(h[-1])
+        p, h = fit_em(s, init, max_iter=short_iter)
+        short.append((h[-1], p))
+        if verbose:
+            print(f"    init {i}: log post after {len(h)} its {h[-1]:.2f}", flush=True)
+    short.sort(key=lambda x: -x[0])
+    best, best_lp, finals = None, -np.inf, []
+    for lp0, p0 in short[:n_finish]:
+        p, h = fit_em(s, p0)
+        finals.append(h[-1])
         if h[-1] > best_lp:
             best, best_lp = p, h[-1]
-    return best, best_lp, all_lp
+    return best, best_lp, [x[0] for x in short] + finals
 
 
 def bits_per_trial(ll: float, s: Seqs) -> float:
@@ -405,6 +422,14 @@ def sort_states(p: Params, names: list[str]) -> Params:
     rest = [k for k in np.argsort(p.W[:, bi]) if k != eng]
     order = [eng] + rest
     return Params(p.W[order], p.A[np.ix_(order, order)], p.pi[order])
+
+
+def engaged_states(p: Params, names: list[str], frac: float = 0.5) -> list[int]:
+    """States counted as 'engaged': stimulus weight >= frac x the largest
+    stimulus weight. Applied to the global fit; per-mouse states are aligned
+    to the global states, so the same indices are used for every mouse."""
+    w = p.W[:, names.index("stim")]
+    return [int(k) for k in np.flatnonzero(w >= frac * w.max())]
 
 
 def align_to(p: Params, ref: Params) -> Params:
@@ -526,11 +551,16 @@ def step_select(design: str) -> int:
 
 
 def step_label(design: str, K: int):
-    """Per-mouse posteriors for every trial; engaged = state 0 after alignment."""
+    """Per-mouse posteriors for every trial. p(engaged) = summed posterior of the
+    engaged states (`engaged_states` on the global fit)."""
     df = load(design)
     names = input_names(design)
     d = OUT / design
     mp = json.load(open(d / "mouse_params.json"))
+    gp = Params.from_dict(json.load(open(d / f"global_K{K}.json")))
+    eng = engaged_states(gp, names)
+    json.dump({"K": K, "engaged_states": eng, "stim_weights": gp.W[:, names.index("stim")].tolist()},
+              open(d / f"engaged_states_K{K}.json", "w"))
     out = []
     for subject, g in df.groupby("subject", sort=True):
         p = Params.from_dict(mp[subject][str(K)])
@@ -545,7 +575,8 @@ def step_label(design: str, K: int):
     out = pd.concat(out, ignore_index=True)
     thr = C.STATE_POSTERIOR_THRESHOLD
     for kind in ("smooth", "filt", "pred"):
-        pe = out[f"p_{kind}_0"]
+        pe = out[[f"p_{kind}_{k}" for k in eng]].sum(1)
+        out[f"p_engaged_{kind}"] = pe
         out[f"engaged_{kind}"] = np.where(pe > thr, 1, np.where(pe < 1 - thr, 0, -1))
     out.to_parquet(d / f"states_K{K}.pqt")
     return out

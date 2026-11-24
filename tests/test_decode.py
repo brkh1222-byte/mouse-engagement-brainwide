@@ -79,3 +79,18 @@ def test_aggregation():
     assert rej[:3].all() and not rej[3]
     assert D.fisher_combine([0.01, 0.02]) < 0.01
     assert 0 < D.stouffer_combine([0.5, 0.5]) <= 0.51
+
+
+def test_pseudo_session_labels():
+    from src import glmhmm as G
+    from src import nulls as N
+    rng = np.random.default_rng(3)
+    pL, side = N.ibl_block_sides(700, rng)
+    assert np.all(pL[:90] == 0.5) and set(np.unique(pL[90:])) <= {0.2, 0.8}
+    W = np.array([[4.0, 0.1, 0.1, 0.5, 0.0], [0.3, 0.3, 0.0, 0.5, -1.5], [0.3, 0.3, 0.0, 0.5, 1.5]])
+    A = np.array([[0.96, 0.02, 0.02], [0.05, 0.93, 0.02], [0.05, 0.02, 0.93]])
+    p = G.Params(W, A, np.array([0.6, 0.2, 0.2]))
+    lab = N.pseudo_session_labels(p, 600, np.array([1, .25, .125, .0625, 0]),
+                                  {"stim_mean": 0.0, "stim_sd": 0.5}, rng)
+    assert len(lab) == 600 and set(np.unique(lab)) <= {-1, 0, 1}
+    assert 0.3 < np.mean(lab == 1) < 0.95 and np.mean(lab == 0) > 0.03
