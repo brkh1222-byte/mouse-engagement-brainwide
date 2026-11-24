@@ -268,15 +268,21 @@ def _emission_loglik(X, y, W):
 
 
 @njit(cache=True)
-def _grad_hess(X, y, wts, w, lam):
-    """Gradient and Hessian of the weighted logistic log posterior (one pass, no temporaries)."""
+def _obj_grad_hess(X, y, wts, w, lam):
+    """Weighted logistic log posterior, its gradient and (negative) Hessian, in one pass."""
     T, D = X.shape
+    f = 0.0
+    for d in range(D):
+        f -= 0.5 * lam * w[d] * w[d]
     g = -lam * w
     H = lam * np.eye(D)
     for t in range(T):
         eta = 0.0
         for d in range(D):
             eta += X[t, d] * w[d]
+        # log p(y) = y*eta - log(1+exp(eta)), computed stably
+        sp = eta + np.log1p(np.exp(-eta)) if eta > 0 else np.log1p(np.exp(eta))
+        f += wts[t] * (y[t] * eta - sp)
         p = 1.0 / (1.0 + np.exp(-eta))
         r = wts[t] * (y[t] - p)
         v = wts[t] * p * (1.0 - p)
@@ -285,18 +291,29 @@ def _grad_hess(X, y, wts, w, lam):
             xv = v * X[t, d]
             for e in range(D):
                 H[d, e] += xv * X[t, e]
-    return g, H
+    return f, g, H
 
 
 def _newton_logistic(X, y, wts, w0, sigma, n_iter=25, tol=1e-8):
-    """MAP weighted logistic regression by Newton's method (D is tiny)."""
+    """MAP weighted logistic regression by damped Newton (step halving guarantees
+    the concave objective never decreases, so the M-step cannot diverge)."""
     w = w0.copy()
     lam = 1.0 / sigma ** 2
+    f, g, H = _obj_grad_hess(X, y, wts, w, lam)
     for _ in range(n_iter):
-        g, H = _grad_hess(X, y, wts, w, lam)
         step = np.linalg.solve(H, g)
-        w = w + step
-        if np.max(np.abs(step)) < tol:
+        t = 1.0
+        while True:
+            w_new = w + t * step
+            f_new, g_new, H_new = _obj_grad_hess(X, y, wts, w_new, lam)
+            if f_new >= f - 1e-12 * abs(f) or t < 1e-6:
+                break
+            t *= 0.5
+        if f_new < f - 1e-12 * abs(f):      # no improving step found: stay
+            break
+        done = np.max(np.abs(w_new - w)) < tol
+        w, f, g, H = w_new, f_new, g_new, H_new
+        if done:
             break
     return w
 
@@ -529,7 +546,7 @@ def _fit_mouse(args):
             pf, _ = fit_em(s_tr, fp)
             ll = loglik(pf, s_te)
             out_rows.append({"subject": subject, "K": K, "fold": f, "test_ll": ll,
-                             "test_n": s_te.n_obs})
+                             "test_ll_global": loglik(fp, s_te), "test_n": s_te.n_obs})
     return subject, out_rows, params
 
 
@@ -567,7 +584,12 @@ def step_select(design: str) -> int:
         if means[kbest] - means[K] <= se:
             chosen = int(K)
             break
-    summ = pd.DataFrame({"mean_bits": means, "sem_bits": piv.std(ddof=1) / np.sqrt(len(piv))})
+    perg = cv.groupby(["subject", "K"]).agg(ll=("test_ll_global", "sum"), n=("test_n", "sum")).reset_index()
+    perg["bits"] = (perg["ll"] + perg["n"] * LOG2) / (perg["n"] * LOG2)
+    pivg = perg.pivot(index="subject", columns="K", values="bits").loc[piv.index]
+    summ = pd.DataFrame({"mean_bits": means, "sem_bits": piv.std(ddof=1) / np.sqrt(len(piv)),
+                         "mean_bits_global_params": pivg.mean(),
+                         "frac_mice_permouse_better": (piv > pivg).mean()})
     summ.to_csv(d / "k_selection.csv")
     json.dump({"K_best_mean": kbest, "K_chosen_1se": chosen, "n_mice": len(piv)},
               open(d / "k_selection.json", "w"))
@@ -575,7 +597,7 @@ def step_select(design: str) -> int:
     return chosen
 
 
-def step_label(design: str, K: int):
+def step_label(design: str, K: int, params: str = "mouse"):
     """Per-mouse posteriors for every trial. p(engaged) = summed posterior of the
     engaged states (`engaged_states` on the global fit)."""
     df = load(design)
@@ -588,7 +610,7 @@ def step_label(design: str, K: int):
               open(d / f"engaged_states_K{K}.json", "w"))
     out = []
     for subject, g in df.groupby("subject", sort=True):
-        p = Params.from_dict(mp[subject][str(K)])
+        p = gp if params == "global" else Params.from_dict(mp[subject][str(K)])
         s = Seqs.from_df(g, names)
         gamma, alpha, pred, _ = posteriors(p, s)
         o = g[["subject", "eid", "trial", "session_order", "is_bwm", "y", "probabilityLeft"]].copy()
@@ -603,6 +625,7 @@ def step_label(design: str, K: int):
         pe = out[[f"p_{kind}_{k}" for k in eng]].sum(1)
         out[f"p_engaged_{kind}"] = pe
         out[f"engaged_{kind}"] = np.where(pe > thr, 1, np.where(pe < 1 - thr, 0, -1))
+    out["params_used"] = params
     out.to_parquet(d / f"states_K{K}.pqt")
     return out
 
@@ -612,6 +635,7 @@ def main(argv=None):
     ap.add_argument("step", choices=["build", "global", "cv", "mouse", "select", "label"])
     ap.add_argument("--design", default="P", choices=["P", "A90"])
     ap.add_argument("--k", type=int, nargs="*")
+    ap.add_argument("--params", default="mouse", choices=["mouse", "global"])
     a = ap.parse_args(argv)
     ks = tuple(a.k) if a.k else C.GLMHMM_K_RANGE
     if a.step == "build":
@@ -627,7 +651,7 @@ def main(argv=None):
     elif a.step == "select":
         step_select(a.design)
     elif a.step == "label":
-        step_label(a.design, ks[0])
+        step_label(a.design, ks[0], a.params)
 
 
 if __name__ == "__main__":
