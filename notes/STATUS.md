@@ -38,3 +38,14 @@ caffeinate -i nice -n 10 .venv/bin/python -m src.glmhmm global --design P     # 
 - Added `src/nulls.py` (pseudo-session null). 10 tests pass.
 - `paper/main.tex`: Introduction and Methods drafted; `paper/refs.bib`: 25 references, all verified.
 - `preregistration/prereg.md`: drafted, NOT staged. The [FILL] fields are completed after the GLM-HMM run.
+
+## Update 2026-11-25 01:45 (the researcher is away; work continues autonomously)
+- All 139 per-mouse history tables are downloaded.
+- Datasets: A90 = 118,577 trials / 1,320 sessions; P = 937,750 trials / 1,328 sessions; 139 mice; all 459 BWM sessions are in both.
+- A90 global fits and CV are done. Global-model held-out bits/trial for K=1..5: 0.310, 0.380, 0.404, 0.418, 0.423. The A90 per-mouse step is running inside `scripts/run_glmhmm.sh`, which then runs select, label and `cv --design P`.
+- P global: K=1 and K=2 are done. K=3–5 were restarted with a numba Newton step (about 7x faster, numerically identical). Log: `results/glmhmm/run_globalP.log`.
+- **After both finish, run by hand:** `nice -n 10 .venv/bin/python -m src.glmhmm mouse --design P`, then `select --design P`, then `label --design P --k <K>`. Then run the inclusion counts and figures (`src/behaviour_report.py`, to be written).
+- If a process died, rerun the same step. The global and cv steps overwrite their per-K files. To finish only the missing K, pass `--k`.
+- New code: `src/run_decoding.py` (resumable streaming run, with a guard that refuses real data until the prereg is committed), `src/aggregate.py` (region table, H2, H3), `src/nulls.py`.
+- In progress: the Steinmetz behaviour-only GLM-HMM. Trials tables are streamed from DANDI 000017 NWB files over HTTP range requests; no spikes are read.
+- Still to write: `notes/prereg_summary.md`, `notes/decisions.md`.

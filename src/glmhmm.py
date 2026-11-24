@@ -127,6 +127,14 @@ def session_design(df: pd.DataFrame, with_prior: bool) -> tuple[np.ndarray, np.n
     return np.column_stack(cols), y
 
 
+def session_prior_logodds(df: pd.DataFrame) -> np.ndarray:
+    """Block-prior covariate for one session (same definition as the GLM-HMM input)."""
+    side = np.where(df["contrastRight"].notna().to_numpy(), 1.0,
+                    np.where(df["contrastLeft"].notna().to_numpy(), -1.0, 0.0))
+    p = bayes_prior(side)
+    return np.log(p / (1 - p)) / np.log(4.0)
+
+
 def input_names(design: str) -> list[str]:
     return ["stim", "pc", "wsls"] + (["prior"] if design == "P" else []) + ["bias"]
 
@@ -259,16 +267,33 @@ def _emission_loglik(X, y, W):
     return ll
 
 
+@njit(cache=True)
+def _grad_hess(X, y, wts, w, lam):
+    """Gradient and Hessian of the weighted logistic log posterior (one pass, no temporaries)."""
+    T, D = X.shape
+    g = -lam * w
+    H = lam * np.eye(D)
+    for t in range(T):
+        eta = 0.0
+        for d in range(D):
+            eta += X[t, d] * w[d]
+        p = 1.0 / (1.0 + np.exp(-eta))
+        r = wts[t] * (y[t] - p)
+        v = wts[t] * p * (1.0 - p)
+        for d in range(D):
+            g[d] += r * X[t, d]
+            xv = v * X[t, d]
+            for e in range(D):
+                H[d, e] += xv * X[t, e]
+    return g, H
+
+
 def _newton_logistic(X, y, wts, w0, sigma, n_iter=25, tol=1e-8):
     """MAP weighted logistic regression by Newton's method (D is tiny)."""
     w = w0.copy()
-    D = X.shape[1]
     lam = 1.0 / sigma ** 2
     for _ in range(n_iter):
-        eta = X @ w
-        p = 1 / (1 + np.exp(-eta))
-        g = X.T @ (wts * (y - p)) - lam * w
-        H = (X * (wts * p * (1 - p))[:, None]).T @ X + lam * np.eye(D)
+        g, H = _grad_hess(X, y, wts, w, lam)
         step = np.linalg.solve(H, g)
         w = w + step
         if np.max(np.abs(step)) < tol:
@@ -338,7 +363,7 @@ def fit_em(s: Seqs, init: Params, sigma=C.GLMHMM_PRIOR_SIGMA, alpha=C.GLMHMM_DIR
     p = Params(init.W.copy(), init.A.copy(), init.pi.copy())
     K = p.K
     obs = s.y >= 0
-    Xo = s.X[obs]
+    Xo = np.ascontiguousarray(s.X[obs])
     yo = s.y[obs].astype(float)
     hist = []
     prev = -np.inf

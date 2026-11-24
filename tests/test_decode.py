@@ -94,3 +94,29 @@ def test_pseudo_session_labels():
                                   {"stim_mean": 0.0, "stim_sd": 0.5}, rng)
     assert len(lab) == 600 and set(np.unique(lab)) <= {-1, 0, 1}
     assert 0.3 < np.mean(lab == 1) < 0.95 and np.mean(lab == 0) > 0.03
+
+
+def test_end_to_end_simulated_run_and_aggregation():
+    """Whole path: session loop -> donors -> decoding -> region table -> H2/H3 helpers."""
+    from src import aggregate as AG
+    from src.run_decoding import run_simulated
+    df = run_simulated(n_sessions=8, n_null=12)
+    assert set(df["region"]) == {"ENG", "MOV", "PRI", "NUL"} and set(df["model"]) == {"A", "B"}
+    rt = AG.region_table(df, n_boot=200)
+    b = rt[rt.model == "B"].set_index("region")
+    assert b.loc["ENG", "sig_fisher"] and not b.loc["NUL", "sig_fisher"]
+    assert b.loc["ENG", "median_effect"] > 0.1 and abs(b.loc["NUL", "median_effect"]) < 0.08
+    a = rt[rt.model == "A"].set_index("region")
+    assert a.loc["MOV", "median_effect"] > b.loc["MOV", "median_effect"]
+    r = AG.h3_test(b["median_effect"], b["median_effect"] + 0.001, n_perm=200, n_boot=200, min_regions=4)
+    assert r["testable"] and r["rho"] > 0.99
+    assert not AG.h3_test(b["median_effect"], b["median_effect"])["testable"]   # < 8 shared regions
+
+
+def test_blindness_guard_blocks_real_run():
+    from src import run_decoding as R
+    import pytest
+    if R.prereg_committed():
+        pytest.skip("pre-registration already committed")
+    with pytest.raises(SystemExit):
+        R.run_real(0, 1, 1)
