@@ -566,35 +566,50 @@ def step_mouse(design: str, ks=C.GLMHMM_K_RANGE):
     json.dump(allp, open(d / "mouse_params.json", "w"))
 
 
-def step_select(design: str) -> int:
-    """1-SE rule: smallest K whose mean per-mouse held-out bits/trial is within
-    one standard error (across mice) of the best K."""
-    d = OUT / design
-    cv = pd.read_csv(d / "cv_mouse.csv")
-    per = cv.groupby(["subject", "K"]).agg(ll=("test_ll", "sum"), n=("test_n", "sum")).reset_index()
-    per["bits"] = (per["ll"] + per["n"] * LOG2) / (per["n"] * LOG2)
-    # paired comparison against the best K, per mouse
-    piv = per.pivot(index="subject", columns="K", values="bits").dropna()
+def _one_se_rule(piv: pd.DataFrame) -> tuple[int, int]:
+    """(best K by mean, smallest K within one paired SE of the best)."""
     means = piv.mean()
     kbest = int(means.idxmax())
-    chosen = kbest
     for K in sorted(piv.columns):
         diff = piv[kbest] - piv[K]
         se = diff.std(ddof=1) / np.sqrt(len(diff))
         if means[kbest] - means[K] <= se:
-            chosen = int(K)
-            break
-    perg = cv.groupby(["subject", "K"]).agg(ll=("test_ll_global", "sum"), n=("test_n", "sum")).reset_index()
-    perg["bits"] = (perg["ll"] + perg["n"] * LOG2) / (perg["n"] * LOG2)
-    pivg = perg.pivot(index="subject", columns="K", values="bits").loc[piv.index]
-    summ = pd.DataFrame({"mean_bits": means, "sem_bits": piv.std(ddof=1) / np.sqrt(len(piv)),
-                         "mean_bits_global_params": pivg.mean(),
-                         "frac_mice_permouse_better": (piv > pivg).mean()})
+            return kbest, int(K)
+    return kbest, kbest
+
+
+def step_select(design: str) -> dict:
+    """Model selection on per-mouse held-out bits/trial (mice with >= 2 sessions).
+
+    Two parameter families are scored on exactly the same held-out sessions:
+      "mouse"  per-mouse MAP fits initialised from the fold's global fit
+      "global" the fold's global (pooled) fit itself
+    The family with the higher best mean is used for labelling. Within it, K is
+    the smallest K whose mean is within one standard error (of the paired
+    per-mouse difference) of the best K.
+    """
+    d = OUT / design
+    cv = pd.read_csv(d / "cv_mouse.csv")
+    piv = {}
+    for fam, col in (("mouse", "test_ll"), ("global", "test_ll_global")):
+        per = cv.groupby(["subject", "K"]).agg(ll=(col, "sum"), n=("test_n", "sum")).reset_index()
+        per["bits"] = (per["ll"] + per["n"] * LOG2) / (per["n"] * LOG2)
+        piv[fam] = per.pivot(index="subject", columns="K", values="bits").dropna()
+    fam = max(piv, key=lambda f: piv[f].mean().max())
+    kbest, chosen = _one_se_rule(piv[fam])
+    summ = pd.DataFrame({"mean_bits": piv["mouse"].mean(),
+                         "sem_bits": piv["mouse"].std(ddof=1) / np.sqrt(len(piv["mouse"])),
+                         "mean_bits_global_params": piv["global"].mean(),
+                         "sem_bits_global_params": piv["global"].std(ddof=1) / np.sqrt(len(piv["global"])),
+                         "frac_mice_permouse_better": (piv["mouse"] > piv["global"]).mean()})
+    summ.index.name = "K"
     summ.to_csv(d / "k_selection.csv")
-    json.dump({"K_best_mean": kbest, "K_chosen_1se": chosen, "n_mice": len(piv)},
-              open(d / "k_selection.json", "w"))
-    print(summ, f"\nbest K by mean = {kbest}; chosen (1-SE rule) = {chosen}")
-    return chosen
+    res = {"family": fam, "K_best_mean": kbest, "K_chosen_1se": chosen, "n_mice": len(piv[fam]),
+           "K_chosen_1se_mouse_family": _one_se_rule(piv["mouse"])[1],
+           "K_chosen_1se_global_family": _one_se_rule(piv["global"])[1]}
+    json.dump(res, open(d / "k_selection.json", "w"))
+    print(summ, "\n", res)
+    return res
 
 
 def step_label(design: str, K: int, params: str = "mouse"):
