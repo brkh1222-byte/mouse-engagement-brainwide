@@ -1,4 +1,4 @@
-# STATUS (checkpoint 2026-11-24, before the Mac shut down)
+# STATUS (updated 2026-11-24 evening)
 
 ## Done
 - T0.1: uv env `.venv` (Python 3.11), pins in `requirements.txt` / `requirements.lock`; `src/config.py`.
@@ -28,3 +28,13 @@ caffeinate -i nice -n 10 .venv/bin/python -m src.glmhmm global --design P     # 
 3. Apply the session inclusion rule (≥400 trials; ≥30 engaged and ≥30 disengaged labelled trials, smoothed posterior > 0.8) and record the counts.
 4. Download one session's spikes for a format check only (no engagement statistic). Record it in the prereg's "data already seen" section.
 5. Draft `preregistration/prereg.md`. Draft the paper skeleton (headings and notes, pending the CLAUDE.md decision). Report to the coordinator.
+
+## Update after resume (evening)
+- The authorship policy was updated by the coordinator in 284d5c9 (Claude drafts; the researcher edits).
+- The per-mouse history download resumed. The network is saturated by other jobs (tens of KB/s).
+- The GLM-HMM uses two-stage multi-start fits. Engaged states = stimulus weight ≥ 0.5 × max.
+- Pilot A90 fit (partial histories): K=4 gives two engaged states (stimulus weights 8.5/7.5) and biased-left/right states (stimulus weight about 1.2, bias −1.45/+2.7). Dwell times are about 19/19/10/10 trials, which matches Ashwood's pattern.
+- `scripts/run_glmhmm.sh` runs the full protocol (A90 and P). A guarded waiter starts it automatically once all 139 subject tables exist.
+- Added `src/nulls.py` (pseudo-session null). 10 tests pass.
+- `paper/main.tex`: Introduction and Methods drafted; `paper/refs.bib`: 25 references, all verified.
+- `preregistration/prereg.md`: drafted, NOT staged. The [FILL] fields are completed after the GLM-HMM run.
