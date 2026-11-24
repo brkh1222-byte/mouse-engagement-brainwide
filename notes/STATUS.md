@@ -49,3 +49,12 @@ caffeinate -i nice -n 10 .venv/bin/python -m src.glmhmm global --design P     # 
 - New code: `src/run_decoding.py` (resumable streaming run, with a guard that refuses real data until the prereg is committed), `src/aggregate.py` (region table, H2, H3), `src/nulls.py`.
 - In progress: the Steinmetz behaviour-only GLM-HMM. Trials tables are streamed from DANDI 000017 NWB files over HTTP range requests; no spikes are read.
 - Still to write: `notes/prereg_summary.md`, `notes/decisions.md`.
+
+## Update 2026-11-25 03:10
+- Fixed: per-mouse fits could diverge (undamped Newton). The M-step now uses step halving. The A90 per-mouse step was rerun with no warnings.
+- A90 result: K=3 reproduces Ashwood (stimulus weights 7.4 / 1.5 / 1.4; biases 0 / −1.7 / +2.1; dwell 31 / 13.5 / 14.5 trials). Global parameters beat per-mouse fits on held-out data for K≥3, so `select` now also picks the parameter family (see notes/decisions.md D6).
+- Running, detached: `glmhmm global --design P --k 3 4 5` (log: results/glmhmm/run_globalP.log; K=3 done) and `glmhmm cv --design P` (log: results/glmhmm/run_chain2.log).
+- **Next, by hand, when both are done:** `mouse --design P`; `select --design P`; `label --design P --k <K> --params <family>`; `python -m src.behaviour_report --k <K>`. Then fill the [FILL] fields in the prereg, write notes/prereg_summary.md and the paper's behaviour results.
+- Steinmetz: trials tables are streaming from DANDI (29 of 39 sessions done). After that, `python -m src.steinmetz fit` starts automatically (log: results/steinmetz_fit.log).
+- Loader format check on one real session is running (shapes only; no behaviour-related statistic).
+- notes/decisions.md is written (D1–D20).
