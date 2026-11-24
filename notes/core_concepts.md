@@ -1,6 +1,7 @@
-# mouse-engagement-brainwide — Research Understanding & Plan
+# Core concepts (A.1)
 
-Working copy of the Claude Doc (https://claude.ai/artifact/PYBb94penovduagu6xcd1o). Sections are added as they are written. As of 2026-11-24.
+From the Claude Doc "mouse-engagement-brainwide — Research Understanding & Plan" (https://claude.ai/artifact/PYBb94penovduagu6xcd1o), as of 2026-11-24.
+Other parts: `notes/competition.md` (novelty check, T1.1), `notes/citation_audit.md` (A.6), `notes/research_plan.md` (Part B).
 
 ## A.1 Core concepts, in plain words
 
