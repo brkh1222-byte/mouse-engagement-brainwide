@@ -51,7 +51,7 @@ def s3_list(prefix: str) -> list[tuple[str, int]]:
             return out
 
 
-def s3_get(key: str, dest: Path, size: int | None = None, retries: int = 5,
+def s3_get(key: str, dest: Path, size: int | None = None, retries: int = 8,
            timeout: float = 60) -> Path:
     """Download one object (with timeout and retries) unless already present at the right size."""
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -69,7 +69,7 @@ def s3_get(key: str, dest: Path, size: int | None = None, retries: int = 5,
                 return dest
         except Exception as e:  # network hiccup: retry with backoff
             print(f"  [retry {attempt+1}/{retries}] {key}: {e}", file=sys.stderr, flush=True)
-            time.sleep(2 ** attempt)
+            time.sleep(min(2 ** attempt, 120))
     raise RuntimeError(f"failed to download {key}")
 
 
@@ -153,8 +153,15 @@ def download_subject_tables(sessions: pd.DataFrame, n_threads: int = 4) -> pd.Da
     """Download each BWM mouse's subjectTrials / subjectTraining / subjectSessions tables
     (I/O bound, so a few threads)."""
     pairs = sessions[["lab", "subject"]].drop_duplicates().itertuples(index=False)
+    def safe(ls):
+        try:
+            return _download_one_subject(*ls)
+        except Exception as e:  # keep going; failures are listed in the manifest
+            print(f"  {ls[0]}/{ls[1]}: FAILED ({e})", flush=True)
+            return {"lab": ls[0], "subject": ls[1], "error": str(e)}
+
     with ThreadPoolExecutor(n_threads) as ex:
-        rows = list(ex.map(lambda ls: _download_one_subject(*ls), pairs))
+        rows = list(ex.map(safe, pairs))
     df = pd.DataFrame(rows)
     df.to_csv(C.IBL_SUBJECT_TRIALS / "manifest.csv", index=False)
     return df
