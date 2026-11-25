@@ -466,12 +466,28 @@ def sort_states(p: Params, names: list[str]) -> Params:
     return Params(p.W[order], p.A[np.ix_(order, order)], p.pi[order])
 
 
-def engaged_states(p: Params, names: list[str], frac: float = 0.5) -> list[int]:
-    """States counted as 'engaged': stimulus weight >= frac x the largest
-    stimulus weight. Applied to the global fit; per-mouse states are aligned
-    to the global states, so the same indices are used for every mouse."""
-    w = p.W[:, names.index("stim")]
-    return [int(k) for k in np.flatnonzero(w >= frac * w.max())]
+def split_by_stim_gap(w: np.ndarray) -> list[int]:
+    """Indices of 'engaged' states given each state's stimulus sensitivity.
+
+    States are sorted by sensitivity and split at the largest gap in
+    log-sensitivity; the high group is engaged. States with sensitivity <= 0
+    are always disengaged. Parameter-free, so the same rule serves the IBL and
+    Steinmetz models and every K. With one state, that state is engaged.
+    """
+    w = np.asarray(w, float)
+    pos = np.flatnonzero(w > 0)
+    if len(pos) <= 1:
+        return [int(k) for k in pos]
+    order = pos[np.argsort(-w[pos])]
+    gaps = np.diff(-np.log(w[order]))          # positive log-ratios between neighbours
+    cut = int(np.argmax(gaps))
+    return sorted(int(k) for k in order[: cut + 1])
+
+
+def engaged_states(p: Params, names: list[str]) -> list[int]:
+    """Engaged states of the global fit (see `split_by_stim_gap`). Per-mouse states
+    are aligned to the global states, so the same indices are used for every mouse."""
+    return split_by_stim_gap(p.W[:, names.index("stim")])
 
 
 def align_to(p: Params, ref: Params) -> Params:

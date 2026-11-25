@@ -138,9 +138,9 @@ def sort_states(p: ParamsMN) -> ParamsMN:
     return ParamsMN(p.W[order], p.A[np.ix_(order, order)], p.pi[order])
 
 
-def engaged_states(p: ParamsMN, frac: float = 0.5) -> list[int]:
-    s = stim_sensitivity(p)
-    return [int(k) for k in np.flatnonzero(s >= frac * s.max())]
+def engaged_states(p: ParamsMN) -> list[int]:
+    from src.glmhmm import split_by_stim_gap
+    return split_by_stim_gap(stim_sensitivity(p))
 
 
 def seq_bounds(eids: np.ndarray):

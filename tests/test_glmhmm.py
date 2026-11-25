@@ -79,3 +79,11 @@ def test_session_design_coding():
     assert list(X[:, 0]) == [-1.0, 0.25, 0.0, 0.0]
     assert list(X[:, 1]) == [0, -1, 1, 1]                   # previous valid choice
     assert list(X[:, 2]) == [0, -1, 1, 1]                   # wsls = pc * prev outcome
+
+
+def test_split_by_stim_gap():
+    assert G.split_by_stim_gap([7.9, 0.8, 7.0, 1.2]) == [0, 2]
+    assert G.split_by_stim_gap([7.4, 1.5, 1.4]) == [0]
+    assert G.split_by_stim_gap([21.5, 11.8, 10.9, 6.9, 2.9]) == [0, 1, 2, 3]
+    assert G.split_by_stim_gap([5.0, -0.3]) == [0]
+    assert G.split_by_stim_gap([3.0]) == [0]

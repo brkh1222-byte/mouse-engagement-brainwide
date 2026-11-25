@@ -20,9 +20,10 @@ Decoder (pre-registered)
 Null (pre-registered)
   * Primary, session permutation: the real neural data are decoded against
     engagement label sequences of *other* BWM sessions from *other* mice,
-    aligned by trial index (the first T trials). Keeps each sequence's real
-    temporal structure (including within-session trends shared across
-    sessions), breaks any true link to this session's neurons.
+    resampled to the target session's length by relative position in the
+    session. Keeps each sequence's real temporal structure (including the
+    rise of disengagement at the end of sessions), breaks any true link to
+    this session's neurons.
   * Secondary, pseudo-sessions: labels inferred from choices simulated from
     the mouse's own GLM-HMM on IBL-generated pseudo stimulus sequences
     (Findling et al. 2025-style), see `pseudo_session_labels`.
@@ -131,27 +132,37 @@ def decode_auc(Y: np.ndarray, z: np.ndarray, Cv: np.ndarray | None, model: str =
 
 
 # --------------------------------------------------------------------------- nulls
+def warp_labels(donor: np.ndarray, T: int) -> np.ndarray:
+    """Resample a donor label sequence to length T by relative position in the
+    session (nearest neighbour). Start maps to start and end to end, so
+    within-session trends (e.g. disengagement at the end of a session) stay
+    aligned with the target session's own time course."""
+    idx = np.round(np.linspace(0, len(donor) - 1, T)).astype(int)
+    return donor[idx]
+
+
 def session_permutation_donors(target_len: int, donor_labels: dict[str, np.ndarray],
                                target_subject: str, donor_subject: dict[str, str],
-                               n_null: int, rng, min_donors: int = 100):
-    """Pick donor label sequences for the session-permutation null.
+                               n_null: int, rng, min_donors: int = 100,
+                               max_ratio: float = 2.0):
+    """Label sequences for the session-permutation null.
 
-    Donors are sessions from other mice with at least `T_use` trials, where
-    T_use = target_len if at least `min_donors` such donors exist; otherwise
-    T_use is the largest length that has `min_donors` donors (the real
-    decoding is then also restricted to the first T_use trials).
-    Returns (T_use, list of label arrays of length T_use).
+    Donors are sessions of other mice whose length is within a factor
+    `max_ratio` of the target's (so state dwell times are stretched by at most
+    that factor); each is warped to the target length (`warp_labels`). If fewer
+    than `min_donors` qualify, the length restriction is dropped. Sampling is
+    without replacement when enough donors exist.
+    Returns (target_len, list of label arrays of length target_len).
     """
-    lens = {e: len(v) for e, v in donor_labels.items() if donor_subject[e] != target_subject}
-    L = np.sort(np.array(list(lens.values())))[::-1]
-    if len(L) == 0:
+    other = [e for e in donor_labels if donor_subject[e] != target_subject]
+    if not other:
         raise ValueError("no donors")
-    T_use = target_len if (L >= target_len).sum() >= min_donors else int(L[min(min_donors, len(L)) - 1])
-    T_use = min(T_use, target_len)
-    elig = [e for e, n in lens.items() if n >= T_use]
-    replace = len(elig) < n_null
-    pick = rng.choice(len(elig), n_null, replace=replace)
-    return T_use, [donor_labels[elig[i]][:T_use] for i in pick]
+    elig = [e for e in other
+            if 1 / max_ratio <= len(donor_labels[e]) / target_len <= max_ratio]
+    if len(elig) < min_donors:
+        elig = other
+    pick = rng.choice(len(elig), n_null, replace=len(elig) < n_null)
+    return target_len, [warp_labels(donor_labels[elig[i]], target_len) for i in pick]
 
 
 @dataclass

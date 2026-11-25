@@ -74,6 +74,14 @@ def test_session_permutation_null_calibrated_under_drift():
     assert np.mean(np.array(p_nul) <= 0.05) <= 0.25, p_nul           # NUL not systematically significant
 
 
+def test_warp_labels_keeps_start_and_end():
+    d = np.array([1] * 300 + [0] * 100)
+    w = D.warp_labels(d, 600)
+    assert len(w) == 600 and w[0] == 1 and w[-1] == 0
+    assert abs((w == 0).mean() - 0.25) < 0.01
+    assert np.array_equal(D.warp_labels(d, 400), d)
+
+
 def test_aggregation():
     rej, q = D.bh_fdr(np.array([0.001, 0.01, 0.02, 0.5]))
     assert rej[:3].all() and not rej[3]

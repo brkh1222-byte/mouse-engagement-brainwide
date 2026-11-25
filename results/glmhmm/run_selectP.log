@@ -1,0 +1,10 @@
+   mean_bits  sem_bits  ...  sem_bits_global_params  frac_mice_permouse_better
+K                       ...                                                   
+1   0.423850  0.007397  ...                0.006706                   0.692982
+2   0.481584  0.006928  ...                0.007290                   0.833333
+3   0.494217  0.006545  ...                0.005936                   0.728070
+4   0.499550  0.006596  ...                0.005904                   0.701754
+5   0.499985  0.006697  ...                0.006022                   0.614035
+
+[5 rows x 5 columns] 
+ {'family': 'mouse', 'K_best_mean': 5, 'K_chosen_1se': 4, 'n_mice': 114, 'K_chosen_1se_mouse_family': 4, 'K_chosen_1se_global_family': 5}

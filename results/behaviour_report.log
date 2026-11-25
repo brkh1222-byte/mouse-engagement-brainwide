@@ -1,0 +1,99 @@
+{
+ "design": "P",
+ "K": 4,
+ "inputs": [
+  "stim",
+  "pc",
+  "wsls",
+  "prior",
+  "bias"
+ ],
+ "engaged_states": [
+  0,
+  2
+ ],
+ "state_names": [
+  "engaged (left-leaning)",
+  "disengaged (left-biased)",
+  "engaged (right-leaning)",
+  "disengaged (right-biased)"
+ ],
+ "params_used": "mouse",
+ "global_weights": [
+  [
+   7.929,
+   0.217,
+   0.088,
+   0.982,
+   -1.19
+  ],
+  [
+   0.833,
+   0.344,
+   0.08,
+   0.631,
+   -1.278
+  ],
+  [
+   6.976,
+   0.227,
+   0.06,
+   0.959,
+   0.842
+  ],
+  [
+   1.16,
+   0.288,
+   0.099,
+   0.704,
+   2.027
+  ]
+ ],
+ "expected_dwell_trials_global": [
+  25.7,
+  10.9,
+  29.2,
+  19.4
+ ],
+ "n_trials_fit": 937750,
+ "n_sessions_fit": 1328,
+ "n_mice": 139,
+ "state_occupancy_all": [
+  0.4779,
+  0.0553,
+  0.3954,
+  0.0713
+ ],
+ "state_occupancy_bwm": [
+  0.5423,
+  0.0432,
+  0.3685,
+  0.0461
+ ],
+ "bwm_label_fractions": {
+  "engaged": 0.7781,
+  "disengaged": 0.0442,
+  "unlabelled": 0.1776
+ },
+ "bwm_sessions": 459,
+ "sessions_included": 137,
+ "mice_included": 71,
+ "included_median_n_dis": 57.0,
+ "included_median_n_eng": 390.0,
+ "sessions_included_filtered_labels": 84,
+ "sessions_included_thr0.7": 160,
+ "sessions_included_thr0.9": 92,
+ "label_file": "results/glmhmm_states.parquet",
+ "label_file_sha256": "b1b89377bc2e02e5464cd485a8ef09f242216acd161e01efc8e3ef6c83c37854",
+ "frac_disengaged_by_block": {
+  "0.2": 0.0522,
+  "0.5": 0.0542,
+  "0.8": 0.0551
+ },
+ "frac_disengaged_by_session_quarter": {
+  "Q1": 0.046,
+  "Q2": 0.0348,
+  "Q3": 0.0449,
+  "Q4": 0.09
+ }
+}
