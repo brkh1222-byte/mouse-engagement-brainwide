@@ -58,3 +58,29 @@ caffeinate -i nice -n 10 .venv/bin/python -m src.glmhmm global --design P     # 
 - Steinmetz: trials tables are streaming from DANDI (29 of 39 sessions done). After that, `python -m src.steinmetz fit` starts automatically (log: results/steinmetz_fit.log).
 - Loader format check on one real session is running (shapes only; no behaviour-related statistic).
 - notes/decisions.md is written (D1–D20).
+
+## PAUSED 2026-11-25 ~10:30 at the researcher's request
+
+### Done
+- **Primary GLM-HMM (design P)** is complete with no fit warnings: 937,750 trials, 1,328 sessions, 139 mice.
+  - Per-mouse fits beat global parameters on held-out data, and the 1-SE rule picks **K = 4**. Held-out bits/trial for K=1..5: 0.424, 0.482, 0.494, 0.4996, 0.5000.
+  - Two engaged states (stimulus weights 7.9 and 7.0) and two disengaged states (0.8 and 1.2).
+  - BWM trials: 77.8% engaged, 4.4% disengaged, 17.8% unlabelled. Disengagement is the same across blocks and rises to 13% in the last tenth of a session.
+- **Inclusion:** 137 of 459 sessions (71 mice) have ≥ 30 labelled trials per class. From metadata, that is 539 region × session units and 107 regions with ≥ 2 sessions.
+- Ashwood-design check passes at K = 3.
+- Files: `results/behaviour_summary.json`, `results/inclusion_sessions.csv`, `results/figures/fig1_behaviour.*`, `results/glmhmm_states.parquet` (git-ignored; SHA-256 b1b89377…c37854).
+- Loader format check done on eid 004d8fd5-41e7-4f1b-a45b-0d4ad76fe446 (shapes only). Note: it downloaded 1.4 GB of raw files for one session; they were deleted afterwards.
+- Paper: Introduction, Methods and the behaviour Results are drafted. `notes/decisions.md` has D1–D23.
+- `preregistration/prereg.md`: the IBL fields are filled. It is NOT staged.
+
+### Still running at the pause (detached; safe to leave)
+- `python -m src.steinmetz fit`: a rerun with the new "largest gap" rule for engaged states. **`results/steinmetz_behaviour_summary.json` on disk is still from the OLD rule** until this finishes. The fit itself: K = 5 by the 1-SE rule; held-out bits for K=1..5: 0.370, 0.534, 0.550, 0.567, 0.574.
+- `pytest tests/`: the full suite after the null was changed to position-warped donors. Result not yet known.
+
+### Exact next steps
+1. Check the Steinmetz summary: engaged states should be [0,1,2,3], with one disengaged state. Read the session inclusion count. **Decision D22 in notes/decisions.md describes this expected result and is not yet verified. Correct it if the result differs.**
+2. Check that `pytest tests/` passes. If the null calibration test fails, fix it before anything else.
+3. Finish the prereg: §8.4 (Steinmetz rule and counts; the Steinmetz null has few donors, so p-values are coarse, and H3 uses effect sizes only). Reread the whole file for consistency with the code.
+4. Write `notes/prereg_summary.md` (one-page plain-language summary).
+5. Fill the Steinmetz paragraph in the paper's Results. Commit the Steinmetz results (`results/glmhmm/steinmetz`, the csv and json files).
+6. Final report to the coordinator. After the researcher's OK: `git add -f results/glmhmm_states.parquet preregistration/`, commit, push. Then start `src.run_decoding` with 2 workers.
